@@ -66,10 +66,28 @@ agent runs:  npm install left-pad evil-pkg@1.2.3
   - Local paths (`./x`, `file:`, `link:`, `workspace:`) and bare `npm ci` /
     `npm install` are skipped — that code is already local/visible, or there's
     no per-package ref to triage.
-- **`OnAfterFileEdit`** *(opt-in)* — when the agent edits `package.json` or a
-  lockfile, checks it and feeds the verdict back as agent context (or a block on
-  Claude for a `BLOCK`). It diffs the edit hunks so it doesn't re-triage the
-  whole tree every time:
+- **`OnAfterFileEdit`** — two jobs:
+  - **MCP config files** *(on by default)* — `mcp add` isn't the only way a
+    server gets registered: an agent can write `.mcp.json` (Claude Code),
+    `.cursor/mcp.json` / `.vscode/mcp.json`, Windsurf's `mcp_config.json`, or
+    `claude_desktop_config.json` directly and bypass the execution gate. The
+    hook diffs the edit for **added/changed server entries** and gates each one
+    exactly like an `mcp add`: launcher command → static package scan, http(s)
+    URL → `pkgxray mcp` probe, an entry it can't read → **review** (never a
+    silent allow). Env-only or formatting edits re-triage nothing. A post-edit
+    hook can't undo the write, so a BLOCK becomes a file-edit block (honored by
+    Claude) and a review becomes agent context. Once the gate clears, the
+    vetted stdio entries are **auto-wrapped in place** to launch behind
+    `pkgxray mcp-proxy` (the per-call runtime gate): unlike a command, a config
+    file is shared state the hook can rewrite, so the wrap needs no agent
+    round-trip (`PKGXRAY_HOOK_MCP_WRAP=0` to disable). The
+    `pkgxray-guard wrap-config <file>…` subcommand applies the same rewrite to
+    stdio servers already on disk — retrofitting the runtime gate onto servers
+    registered before the hook was installed.
+  - **Dependency manifests** *(opt-in)* — when the agent edits `package.json`
+    or a lockfile, checks it and feeds the verdict back as agent context (or a
+    block on Claude for a `BLOCK`). It diffs the edit hunks so it doesn't
+    re-triage the whole tree every time:
   - `package.json` — deep-guards **only the newly added/changed deps** (reusing
     the session cache); a formatting/script-only edit triages nothing. Falls
     back to a full-file audit if no added dep can be extracted, so it's never
@@ -132,7 +150,7 @@ All via environment variables (the hook reads them at startup):
 | `PKGXRAY_GUARD_ARGS` | — | Extra flags passed to `pkgxray guard`, e.g. `--no-github-diff`. |
 | `PKGXRAY_CACHE_URL` | — | Forwarded to pkgxray so registry/GitHub fetches route through a shared cache server across runs. |
 | `PKGXRAY_HOOK_MCP_PROBE` | `1` | `0` skips the `pkgxray mcp <url>` probe on HTTP MCP-server adds; they then surface as **review** instead of being probed. |
-| `PKGXRAY_HOOK_MCP_WRAP` | `1` | `0` stops auto-wrapping vetted stdio `mcp add` launchers in `pkgxray mcp-proxy` (the per-call runtime gate). |
+| `PKGXRAY_HOOK_MCP_WRAP` | `1` | `0` stops auto-wrapping vetted stdio servers — both `mcp add` launchers and config-file entries — in `pkgxray mcp-proxy` (the per-call runtime gate). |
 
 The hook memoizes verdicts per exact `ref@version` for the lifetime of its
 process (one agent session): re-installing the same package reuses the first
