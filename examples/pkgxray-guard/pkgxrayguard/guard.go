@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -47,12 +46,12 @@ type Guard struct {
 //   - `report.summary` and `report.findings[].{severity,category,rationale,file}`
 //     (`file` drives the location shown in a deny/ask message)
 //
-// This shape is stable as of pkgxray >= 0.15.0. The hook degrades safely against
+// This shape remains available in pkgxray 1.x. The hook degrades safely against
 // drift: a missing `file` just omits the path, and if `decision` is absent it
 // falls back to the exit code — so an older or erroring pkgxray fails toward
-// UNKNOWN (denied under strict/balanced), never a false allow. pkgxray has no
-// `--version` flag today, so there is no runtime version probe; keep the CLI
-// current. See the README "Requirements" section.
+// UNKNOWN (denied under strict/balanced), never a false allow. The hook does not
+// invoke pkgxray's `--version` command at runtime; the operator verifies the
+// pinned CLI during installation. See the README "Requirements" section.
 type guardJSON struct {
 	Decision string `json:"decision"` // allow | review | block
 	Report   struct {
@@ -88,10 +87,7 @@ func (g Guard) Check(ctx context.Context, spec InstallSpec) Result {
 		}
 	}
 
-	bin := g.Bin
-	if bin == "" {
-		bin = "pkgxray"
-	}
+	bin := ResolveBin(g.Bin)
 	timeout := g.Timeout
 	if timeout == 0 {
 		timeout = 60 * time.Second
@@ -105,8 +101,12 @@ func (g Guard) Check(ctx context.Context, spec InstallSpec) Result {
 	// upstream fetches through the cache server). A child inherits our env, but
 	// forward it explicitly so it still reaches the CLI if the host ever
 	// sanitizes the hook's child environment.
+	// The child needs the standard install prefixes on PATH: pkgxray is a
+	// node script, so both it and its interpreter have to be findable even
+	// when the hook itself was launched with a minimal environment.
+	cmd.Env = ChildEnv()
 	if g.CacheURL != "" {
-		cmd.Env = append(os.Environ(), "PKGXRAY_CACHE_URL="+g.CacheURL)
+		cmd.Env = append(cmd.Env, "PKGXRAY_CACHE_URL="+g.CacheURL)
 	}
 	stdout, runErr := cmd.Output()
 
